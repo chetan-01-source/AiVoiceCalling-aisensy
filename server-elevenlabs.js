@@ -483,6 +483,42 @@ function handleElevenLabsMessage(message) {
 // Buffer for ElevenLabs audio (to send in correct frame sizes)
 let elevenLabsAudioBuffer = new Int16Array(0);
 const FRAME_SIZE = 480; // 10ms at 48kHz
+let audioPlaybackTimer = null; // Timer for paced audio playback
+
+/**
+ * Start paced audio playback - sends frames at 10ms intervals for real-time speed
+ */
+function startAudioPlayback() {
+    // Already running
+    if (audioPlaybackTimer) {
+        return;
+    }
+
+    // Send frames at 10ms intervals (real-time playback)
+    audioPlaybackTimer = setInterval(() => {
+        if (!audioSource) {
+            return;
+        }
+
+        // Send one frame per tick
+        if (elevenLabsAudioBuffer.length >= FRAME_SIZE) {
+            const frame = elevenLabsAudioBuffer.slice(0, FRAME_SIZE);
+            elevenLabsAudioBuffer = elevenLabsAudioBuffer.slice(FRAME_SIZE);
+
+            audioSource.onData({
+                samples: frame,
+                sampleRate: WHATSAPP_SAMPLE_RATE,
+                bitsPerSample: 16,
+                channelCount: 1,
+                numberOfFrames: FRAME_SIZE
+            });
+        } else if (elevenLabsAudioBuffer.length === 0) {
+            // Buffer empty, stop timer until more audio arrives
+            clearInterval(audioPlaybackTimer);
+            audioPlaybackTimer = null;
+        }
+    }, 10); // 10ms = real-time for 480 samples at 48kHz
+}
 
 /**
  * μ-law to linear PCM decoder (kept for backwards compatibility)
@@ -555,26 +591,14 @@ function handleElevenLabsAudio(audioData) {
         // ElevenLabs sends PCM 48kHz - same as WhatsApp! No upsampling needed!
         const samples48k = new Int16Array(alignedBuffer.buffer, alignedBuffer.byteOffset, alignedBuffer.length / 2);
 
-        // Add to buffer
+        // Add to playback buffer (global buffer for paced playback)
         const newBuffer = new Int16Array(elevenLabsAudioBuffer.length + samples48k.length);
         newBuffer.set(elevenLabsAudioBuffer);
         newBuffer.set(samples48k, elevenLabsAudioBuffer.length);
         elevenLabsAudioBuffer = newBuffer;
 
-        // Send frames of exactly 480 samples (as required by RTCAudioSource)
-        while (elevenLabsAudioBuffer.length >= FRAME_SIZE) {
-            const frame = elevenLabsAudioBuffer.slice(0, FRAME_SIZE);
-            elevenLabsAudioBuffer = elevenLabsAudioBuffer.slice(FRAME_SIZE);
-
-            // Send to WhatsApp via RTCAudioSource
-            audioSource.onData({
-                samples: frame,
-                sampleRate: WHATSAPP_SAMPLE_RATE,
-                bitsPerSample: 16,
-                channelCount: 1,
-                numberOfFrames: FRAME_SIZE
-            });
-        }
+        // Start the playback timer if not already running
+        startAudioPlayback();
 
     } catch (error) {
         console.error("❌ Error handling ElevenLabs audio:", error.message);
