@@ -254,9 +254,12 @@ async function createUltravoxCall(callerName, callerNumber) {
             {
                 systemPrompt: `${ULTRAVOX_SYSTEM_PROMPT}\n\nYou are speaking with ${callerName} calling from ${callerNumber}.`,
                 voice: ULTRAVOX_VOICE,
-                medium: "serverWebSocket",
-                inputSampleRate: 16000,
-                outputSampleRate: 16000,
+                medium: {
+                    serverWebSocket: {
+                        inputSampleRate: 16000,
+                        outputSampleRate: 16000
+                    }
+                },
                 temperature: 0.8,
                 model: "fixie-ai/ultravox-v0_4_1-llama-3_3-70b"
             },
