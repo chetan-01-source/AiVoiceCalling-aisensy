@@ -5,6 +5,11 @@
   "main": "server.js",
   "author": "Amit Kulkarni",
   "license": "MIT",
+  "scripts": {
+    "start": "node server.js",
+    "build": "echo 'No build step required - Node.js server ready for deployment'",
+    "dev": "node server.js"
+  },
   "dependencies": {
     "@roamhq/wrtc": "^0.9.1",
     "axios": "^1.11.0",
