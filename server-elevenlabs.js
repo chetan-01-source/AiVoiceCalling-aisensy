@@ -331,18 +331,14 @@ async function connectToElevenLabs(callerName, callerNumber) {
                 console.log("✅ ElevenLabs WebSocket connected");
 
                 // Initialize conversation with caller context
+                // Note: prompt override is not allowed by ElevenLabs config
+                // Use custom_llm_extra_body to pass context to the LLM
                 const initMessage = {
                     type: "conversation_initiation_client_data",
-                    conversation_config_override: {
-                        agent: {
-                            prompt: {
-                                prompt: `The caller's name is ${callerName} and their phone number is ${callerNumber}. Greet them appropriately.`
-                            }
-                        }
-                    },
                     custom_llm_extra_body: {
                         caller_name: callerName,
-                        caller_number: callerNumber
+                        caller_number: callerNumber,
+                        context: `Caller: ${callerName} (${callerNumber})`
                     }
                 };
 
@@ -431,11 +427,16 @@ function handleElevenLabsMessage(message) {
     }
 }
 
+// Buffer for ElevenLabs audio (to send in correct frame sizes)
+let elevenLabsAudioBuffer = new Int16Array(0);
+const FRAME_SIZE = 480; // 10ms at 48kHz
+
 /**
  * Handle audio data from ElevenLabs
  * 
  * ElevenLabs sends audio as base64 encoded PCM at 16kHz
  * We need to upsample to 48kHz and send to WhatsApp via RTCAudioSource
+ * RTCAudioSource requires exactly 480 samples per frame (10ms at 48kHz)
  */
 function handleElevenLabsAudio(audioData) {
     try {
@@ -472,14 +473,26 @@ function handleElevenLabsAudio(audioData) {
             }
         }
 
-        // Send to WhatsApp via RTCAudioSource
-        audioSource.onData({
-            samples: samples48k,
-            sampleRate: WHATSAPP_SAMPLE_RATE,
-            bitsPerSample: 16,
-            channelCount: 1,
-            numberOfFrames: samples48k.length
-        });
+        // Add to buffer
+        const newBuffer = new Int16Array(elevenLabsAudioBuffer.length + samples48k.length);
+        newBuffer.set(elevenLabsAudioBuffer);
+        newBuffer.set(samples48k, elevenLabsAudioBuffer.length);
+        elevenLabsAudioBuffer = newBuffer;
+
+        // Send frames of exactly 480 samples (as required by RTCAudioSource)
+        while (elevenLabsAudioBuffer.length >= FRAME_SIZE) {
+            const frame = elevenLabsAudioBuffer.slice(0, FRAME_SIZE);
+            elevenLabsAudioBuffer = elevenLabsAudioBuffer.slice(FRAME_SIZE);
+
+            // Send to WhatsApp via RTCAudioSource
+            audioSource.onData({
+                samples: frame,
+                sampleRate: WHATSAPP_SAMPLE_RATE,
+                bitsPerSample: 16,
+                channelCount: 1,
+                numberOfFrames: FRAME_SIZE
+            });
+        }
 
     } catch (error) {
         console.error("❌ Error handling ElevenLabs audio:", error.message);
