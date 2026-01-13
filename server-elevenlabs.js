@@ -352,7 +352,7 @@ async function connectToElevenLabs(callerName, callerNumber) {
                 // Handle messages from ElevenLabs
                 if (Buffer.isBuffer(data)) {
                     // Binary audio data from ElevenLabs AI
-                    // This is already in a compatible format (Opus or configured output)
+                    console.log(`🔊 Received binary audio from ElevenLabs: ${data.length} bytes`);
                     handleElevenLabsAudio(data);
                 } else {
                     // JSON control/text messages
@@ -360,7 +360,7 @@ async function connectToElevenLabs(callerName, callerNumber) {
                         const message = JSON.parse(data.toString());
                         handleElevenLabsMessage(message);
                     } catch (e) {
-                        console.log("📩 ElevenLabs data:", data.toString());
+                        console.log("📩 ElevenLabs raw data:", data.toString().substring(0, 200));
                     }
                 }
             });
@@ -438,13 +438,23 @@ const FRAME_SIZE = 480; // 10ms at 48kHz
  * We need to upsample to 48kHz and send to WhatsApp via RTCAudioSource
  * RTCAudioSource requires exactly 480 samples per frame (10ms at 48kHz)
  */
+let elevenLabsAudioCount = 0;
+
 function handleElevenLabsAudio(audioData) {
     try {
         if (!audioSource) {
+            console.log("⚠️ No audioSource - skipping ElevenLabs audio");
             return;
         }
 
-        // ElevenLabs might send audio as binary or in a JSON wrapper
+        elevenLabsAudioCount++;
+
+        // Log every 10th audio chunk to show we're receiving audio
+        if (elevenLabsAudioCount % 10 === 1) {
+            console.log(`🔊 ElevenLabs audio chunk #${elevenLabsAudioCount}: ${audioData.length} bytes`);
+        }
+
+        // ElevenLabs sends audio as binary buffer
         let pcmData;
 
         if (Buffer.isBuffer(audioData)) {
@@ -454,8 +464,21 @@ function handleElevenLabsAudio(audioData) {
             pcmData = Buffer.from(audioData, 'base64');
         }
 
+        // Ensure even byte length for Int16Array (2 bytes per sample)
+        if (pcmData.length % 2 !== 0) {
+            pcmData = pcmData.slice(0, pcmData.length - 1);
+        }
+
+        if (pcmData.length < 2) {
+            return; // Not enough data
+        }
+
+        // Copy buffer to ensure proper alignment for Int16Array
+        const alignedBuffer = Buffer.alloc(pcmData.length);
+        pcmData.copy(alignedBuffer);
+
         // Convert buffer to Int16Array (16-bit PCM)
-        const samples16k = new Int16Array(pcmData.buffer, pcmData.byteOffset, pcmData.length / 2);
+        const samples16k = new Int16Array(alignedBuffer.buffer, alignedBuffer.byteOffset, alignedBuffer.length / 2);
 
         // Upsample from 16kHz to 48kHz (WhatsApp rate)
         const ratio = WHATSAPP_SAMPLE_RATE / ELEVENLABS_SAMPLE_RATE; // 48000/16000 = 3
