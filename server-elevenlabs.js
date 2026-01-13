@@ -337,11 +337,16 @@ async function connectToElevenLabs(callerName, callerNumber) {
             elevenLabsWs.on("open", () => {
                 console.log("✅ ElevenLabs WebSocket connected");
 
-                // Initialize conversation with caller context
-                // Note: prompt override is not allowed by ElevenLabs config
-                // Use custom_llm_extra_body to pass context to the LLM
+                // Initialize conversation with caller context and audio configuration
+                // Request PCM 16kHz output for easier processing
                 const initMessage = {
                     type: "conversation_initiation_client_data",
+                    conversation_config_override: {
+                        tts: {
+                            // Request raw PCM 16kHz output (easier to process than μ-law or MP3)
+                            output_format: "pcm_16000"
+                        }
+                    },
                     custom_llm_extra_body: {
                         caller_name: callerName,
                         caller_number: callerNumber,
@@ -350,7 +355,7 @@ async function connectToElevenLabs(callerName, callerNumber) {
                 };
 
                 elevenLabsWs.send(JSON.stringify(initMessage));
-                console.log("📤 Sent conversation initialization to ElevenLabs");
+                console.log("📤 Sent conversation initialization (PCM 16kHz output)");
 
                 resolve();
             });
@@ -439,8 +444,7 @@ let elevenLabsAudioBuffer = new Int16Array(0);
 const FRAME_SIZE = 480; // 10ms at 48kHz
 
 /**
- * μ-law to linear PCM decoder
- * ElevenLabs sends μ-law audio at 8kHz by default
+ * μ-law to linear PCM decoder (kept for backwards compatibility)
  */
 const MULAW_DECODE_TABLE = new Int16Array(256);
 (function initMulawTable() {
@@ -466,12 +470,11 @@ function decodeMulaw(mulawData) {
 /**
  * Handle audio data from ElevenLabs
  * 
- * ElevenLabs sends μ-law audio at 8kHz by default
- * We decode to PCM and upsample to 48kHz for WhatsApp
- * RTCAudioSource requires exactly 480 samples per frame (10ms at 48kHz)
+ * We configured ElevenLabs to send PCM 16kHz (output_format: pcm_16000)
+ * Binary data is raw 16-bit PCM samples
+ * Upsample to 48kHz for WhatsApp
  */
 let elevenLabsAudioCount = 0;
-const ELEVENLABS_MULAW_SAMPLE_RATE = 8000;
 
 function handleElevenLabsAudio(audioData) {
     try {
@@ -482,48 +485,53 @@ function handleElevenLabsAudio(audioData) {
 
         elevenLabsAudioCount++;
 
-        // Log every 10th audio chunk to show we're receiving audio
-        if (elevenLabsAudioCount % 10 === 1) {
-            console.log(`🔊 ElevenLabs audio chunk #${elevenLabsAudioCount}: ${audioData.length} bytes (μ-law 8kHz)`);
-        }
-
-        // ElevenLabs sends μ-law audio as binary buffer
-        let mulawData;
-
+        // Get buffer data
+        let pcmData;
         if (Buffer.isBuffer(audioData)) {
-            mulawData = audioData;
+            pcmData = audioData;
         } else {
-            // If it's base64 encoded in a message
-            mulawData = Buffer.from(audioData, 'base64');
+            pcmData = Buffer.from(audioData, 'base64');
         }
 
-        if (mulawData.length < 1) {
-            return; // Not enough data
+        // Log audio info periodically
+        if (elevenLabsAudioCount % 20 === 1) {
+            console.log(`🔊 ElevenLabs audio #${elevenLabsAudioCount}: ${pcmData.length} bytes (PCM 16kHz)`);
         }
 
-        // Decode μ-law to 16-bit PCM
-        const samples8k = decodeMulaw(mulawData);
+        // Ensure even byte length for 16-bit samples
+        if (pcmData.length % 2 !== 0) {
+            pcmData = pcmData.slice(0, pcmData.length - 1);
+        }
 
-        // Upsample from 8kHz to 48kHz (WhatsApp rate) - 6x ratio
-        const ratio = WHATSAPP_SAMPLE_RATE / ELEVENLABS_MULAW_SAMPLE_RATE; // 48000/8000 = 6
-        const samples48k = new Int16Array(samples8k.length * ratio);
+        if (pcmData.length < 2) {
+            return;
+        }
 
-        // Upsampling with linear interpolation
-        for (let i = 0; i < samples8k.length - 1; i++) {
+        // Copy to aligned buffer and convert to Int16Array
+        const alignedBuffer = Buffer.alloc(pcmData.length);
+        pcmData.copy(alignedBuffer);
+        const samples16k = new Int16Array(alignedBuffer.buffer, alignedBuffer.byteOffset, alignedBuffer.length / 2);
+
+        // Upsample from 16kHz to 48kHz (3x ratio)
+        const ratio = 3; // 48000 / 16000
+        const samples48k = new Int16Array(samples16k.length * ratio);
+
+        // Linear interpolation upsampling
+        for (let i = 0; i < samples16k.length - 1; i++) {
             const idx = i * ratio;
-            const sample1 = samples8k[i];
-            const sample2 = samples8k[i + 1];
+            const sample1 = samples16k[i];
+            const sample2 = samples16k[i + 1];
 
             for (let j = 0; j < ratio; j++) {
                 const t = j / ratio;
                 samples48k[idx + j] = Math.round(sample1 * (1 - t) + sample2 * t);
             }
         }
-        // Handle last sample
-        if (samples8k.length > 0) {
-            const lastIdx = (samples8k.length - 1) * ratio;
+        // Last sample
+        if (samples16k.length > 0) {
+            const lastIdx = (samples16k.length - 1) * ratio;
             for (let j = 0; j < ratio; j++) {
-                samples48k[lastIdx + j] = samples8k[samples8k.length - 1];
+                samples48k[lastIdx + j] = samples16k[samples16k.length - 1];
             }
         }
 
