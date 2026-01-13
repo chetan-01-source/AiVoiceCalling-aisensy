@@ -341,11 +341,15 @@ async function initiateWebRTCBridge() {
         };
 
         browserPc.oniceconnectionstatechange = () => {
-            console.log(`Browser ICE state: ${browserPc.iceConnectionState}`);
+            if (browserPc) {
+                console.log(`Browser ICE state: ${browserPc.iceConnectionState}`);
+            }
         };
 
         browserPc.onconnectionstatechange = () => {
-            console.log(`Browser connection state: ${browserPc.connectionState}`);
+            if (browserPc) {
+                console.log(`Browser connection state: ${browserPc.connectionState}`);
+            }
         };
 
         await browserPc.setRemoteDescription(new RTCSessionDescription({
@@ -380,11 +384,15 @@ async function initiateWebRTCBridge() {
         };
 
         whatsappPc.oniceconnectionstatechange = () => {
-            console.log(`WhatsApp ICE state: ${whatsappPc.iceConnectionState}`);
+            if (whatsappPc) {
+                console.log(`WhatsApp ICE state: ${whatsappPc.iceConnectionState}`);
+            }
         };
 
         whatsappPc.onconnectionstatechange = () => {
-            console.log(`WhatsApp connection state: ${whatsappPc.connectionState}`);
+            if (whatsappPc) {
+                console.log(`WhatsApp connection state: ${whatsappPc.connectionState}`);
+            }
         };
 
         await whatsappPc.setRemoteDescription(new RTCSessionDescription({
