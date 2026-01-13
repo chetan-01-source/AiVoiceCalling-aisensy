@@ -361,29 +361,36 @@ async function connectToElevenLabs(callerName, callerNumber) {
 
             elevenLabsWs.on("message", (data) => {
                 // Handle messages from ElevenLabs
+                // Note: ElevenLabs may send JSON as Buffer, not just string
+
+                let messageData;
                 if (Buffer.isBuffer(data)) {
-                    // Binary audio data
-                    // Detect format by checking first bytes
-                    const firstBytes = data.slice(0, 4).toString('hex');
-                    const isOpus = firstBytes.startsWith('4f67'); // OggS
-                    const isMp3 = firstBytes.startsWith('fff') || firstBytes.startsWith('494433'); // MP3 sync or ID3
-
-                    if (elevenLabsAudioCount < 5) {
-                        console.log(`🔊 Binary audio: ${data.length} bytes, first bytes: ${firstBytes}`);
-                        if (isOpus) console.log("   Format detected: Opus/Ogg");
-                        else if (isMp3) console.log("   Format detected: MP3");
-                        else console.log("   Format: Assuming raw PCM");
-                    }
-
-                    handleElevenLabsAudio(data);
+                    messageData = data;
                 } else {
-                    // JSON control/text messages
+                    messageData = Buffer.from(data);
+                }
+
+                // Check if it's JSON (starts with '{')
+                const firstByte = messageData[0];
+                const isJson = firstByte === 0x7b; // '{'
+
+                if (isJson) {
+                    // Parse as JSON
                     try {
-                        const message = JSON.parse(data.toString());
+                        const message = JSON.parse(messageData.toString());
                         handleElevenLabsMessage(message);
                     } catch (e) {
-                        console.log("📩 ElevenLabs raw data:", data.toString().substring(0, 200));
+                        console.log("📩 Failed to parse JSON:", messageData.toString().substring(0, 100));
                     }
+                } else {
+                    // Binary audio data
+                    const firstBytes = messageData.slice(0, 4).toString('hex');
+
+                    if (elevenLabsAudioCount < 5) {
+                        console.log(`🔊 ACTUAL Audio: ${messageData.length} bytes, first bytes: ${firstBytes}`);
+                    }
+
+                    handleElevenLabsAudio(messageData);
                 }
             });
 
