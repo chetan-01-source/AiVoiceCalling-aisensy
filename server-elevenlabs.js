@@ -439,13 +439,39 @@ let elevenLabsAudioBuffer = new Int16Array(0);
 const FRAME_SIZE = 480; // 10ms at 48kHz
 
 /**
+ * μ-law to linear PCM decoder
+ * ElevenLabs sends μ-law audio at 8kHz by default
+ */
+const MULAW_DECODE_TABLE = new Int16Array(256);
+(function initMulawTable() {
+    for (let i = 0; i < 256; i++) {
+        let mulaw = ~i;
+        let sign = (mulaw & 0x80) ? -1 : 1;
+        let exponent = (mulaw >> 4) & 0x07;
+        let mantissa = mulaw & 0x0F;
+        let sample = ((mantissa << 3) + 0x84) << exponent;
+        sample = (sample - 0x84) * sign;
+        MULAW_DECODE_TABLE[i] = sample;
+    }
+})();
+
+function decodeMulaw(mulawData) {
+    const pcmSamples = new Int16Array(mulawData.length);
+    for (let i = 0; i < mulawData.length; i++) {
+        pcmSamples[i] = MULAW_DECODE_TABLE[mulawData[i]];
+    }
+    return pcmSamples;
+}
+
+/**
  * Handle audio data from ElevenLabs
  * 
- * ElevenLabs sends audio as base64 encoded PCM at 16kHz
- * We need to upsample to 48kHz and send to WhatsApp via RTCAudioSource
+ * ElevenLabs sends μ-law audio at 8kHz by default
+ * We decode to PCM and upsample to 48kHz for WhatsApp
  * RTCAudioSource requires exactly 480 samples per frame (10ms at 48kHz)
  */
 let elevenLabsAudioCount = 0;
+const ELEVENLABS_MULAW_SAMPLE_RATE = 8000;
 
 function handleElevenLabsAudio(audioData) {
     try {
@@ -458,48 +484,46 @@ function handleElevenLabsAudio(audioData) {
 
         // Log every 10th audio chunk to show we're receiving audio
         if (elevenLabsAudioCount % 10 === 1) {
-            console.log(`🔊 ElevenLabs audio chunk #${elevenLabsAudioCount}: ${audioData.length} bytes`);
+            console.log(`🔊 ElevenLabs audio chunk #${elevenLabsAudioCount}: ${audioData.length} bytes (μ-law 8kHz)`);
         }
 
-        // ElevenLabs sends audio as binary buffer
-        let pcmData;
+        // ElevenLabs sends μ-law audio as binary buffer
+        let mulawData;
 
         if (Buffer.isBuffer(audioData)) {
-            pcmData = audioData;
+            mulawData = audioData;
         } else {
             // If it's base64 encoded in a message
-            pcmData = Buffer.from(audioData, 'base64');
+            mulawData = Buffer.from(audioData, 'base64');
         }
 
-        // Ensure even byte length for Int16Array (2 bytes per sample)
-        if (pcmData.length % 2 !== 0) {
-            pcmData = pcmData.slice(0, pcmData.length - 1);
-        }
-
-        if (pcmData.length < 2) {
+        if (mulawData.length < 1) {
             return; // Not enough data
         }
 
-        // Copy buffer to ensure proper alignment for Int16Array
-        const alignedBuffer = Buffer.alloc(pcmData.length);
-        pcmData.copy(alignedBuffer);
+        // Decode μ-law to 16-bit PCM
+        const samples8k = decodeMulaw(mulawData);
 
-        // Convert buffer to Int16Array (16-bit PCM)
-        const samples16k = new Int16Array(alignedBuffer.buffer, alignedBuffer.byteOffset, alignedBuffer.length / 2);
+        // Upsample from 8kHz to 48kHz (WhatsApp rate) - 6x ratio
+        const ratio = WHATSAPP_SAMPLE_RATE / ELEVENLABS_MULAW_SAMPLE_RATE; // 48000/8000 = 6
+        const samples48k = new Int16Array(samples8k.length * ratio);
 
-        // Upsample from 16kHz to 48kHz (WhatsApp rate)
-        const ratio = WHATSAPP_SAMPLE_RATE / ELEVENLABS_SAMPLE_RATE; // 48000/16000 = 3
-        const samples48k = new Int16Array(samples16k.length * ratio);
-
-        // Simple upsampling with linear interpolation
-        for (let i = 0; i < samples16k.length - 1; i++) {
+        // Upsampling with linear interpolation
+        for (let i = 0; i < samples8k.length - 1; i++) {
             const idx = i * ratio;
-            const sample1 = samples16k[i];
-            const sample2 = samples16k[i + 1];
+            const sample1 = samples8k[i];
+            const sample2 = samples8k[i + 1];
 
             for (let j = 0; j < ratio; j++) {
                 const t = j / ratio;
                 samples48k[idx + j] = Math.round(sample1 * (1 - t) + sample2 * t);
+            }
+        }
+        // Handle last sample
+        if (samples8k.length > 0) {
+            const lastIdx = (samples8k.length - 1) * ratio;
+            for (let j = 0; j < ratio; j++) {
+                samples48k[lastIdx + j] = samples8k[samples8k.length - 1];
             }
         }
 
