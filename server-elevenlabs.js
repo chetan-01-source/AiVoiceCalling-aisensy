@@ -60,6 +60,8 @@ let elevenLabsWs = null;
 let conversationId = null;
 let audioSink = null;       // RTCAudioSink for extracting audio from WhatsApp
 let audioSource = null;     // RTCAudioSource for sending audio to WhatsApp
+let audioSendCount = 0;
+let audioSendEnabled = true; // Re-enabled after fixing ping response
 let audioSenderTrack = null; // Track for sending audio back to WhatsApp
 
 /**
@@ -412,19 +414,26 @@ function handleElevenLabsMessage(message) {
     console.log("📩 ElevenLabs message:", message);
     switch (message.type) {
         case "conversation_initiation_metadata":
-            conversationId = message.conversation_id;
+            // Correct path: message.conversation_initiation_metadata_event.conversation_id
+            conversationId = message.conversation_initiation_metadata_event?.conversation_id || message.conversation_id;
             console.log(`📋 ElevenLabs conversation started: ${conversationId}`);
+            console.log(`   Output format: ${message.conversation_initiation_metadata_event?.agent_output_audio_format}`);
+            console.log(`   Input format: ${message.conversation_initiation_metadata_event?.user_input_audio_format}`);
             break;
 
         case "user_transcript":
-            if (message.user_transcript?.text) {
-                console.log(`🎤 Caller said: "${message.user_transcript.text}"`);
+            // Check both possible paths
+            const userText = message.user_transcript_event?.user_transcript || message.user_transcript?.text;
+            if (userText) {
+                console.log(`🎤 Caller said: "${userText}"`);
             }
             break;
 
         case "agent_response":
-            if (message.agent_response?.text) {
-                console.log(`🤖 AI Agent: "${message.agent_response.text}"`);
+            // Check both possible paths
+            const agentText = message.agent_response_event?.agent_response || message.agent_response?.text;
+            if (agentText) {
+                console.log(`🤖 AI Agent: "${agentText}"`);
             }
             break;
 
@@ -446,9 +455,15 @@ function handleElevenLabsMessage(message) {
             break;
 
         case "ping":
-            // Respond to keep-alive pings
+            // Respond to keep-alive pings with matching event_id
             if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                elevenLabsWs.send(JSON.stringify({ type: "pong" }));
+                const pingEventId = message.ping_event?.event_id;
+                const pongMessage = {
+                    type: "pong",
+                    event_id: pingEventId
+                };
+                elevenLabsWs.send(JSON.stringify(pongMessage));
+                console.log(`🏓 Sent pong for event_id: ${pingEventId}`);
             }
             break;
 
@@ -672,9 +687,8 @@ function setupAudioBridge() {
  * Send audio from WhatsApp to ElevenLabs
  * 
  * ElevenLabs Conversational AI accepts audio as base64 in JSON
+ * Note: audioSendCount is declared at top of file
  */
-let audioSendCount = 0;
-
 function sendAudioToElevenLabs(audioData) {
     if (!elevenLabsWs || elevenLabsWs.readyState !== WebSocket.OPEN) {
         return;
