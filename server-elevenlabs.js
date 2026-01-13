@@ -337,16 +337,10 @@ async function connectToElevenLabs(callerName, callerNumber) {
             elevenLabsWs.on("open", () => {
                 console.log("✅ ElevenLabs WebSocket connected");
 
-                // Initialize conversation with audio configuration
-                // Request PCM 16kHz output - this should work based on ElevenLabs API
+                // Simple initialization - ElevenLabs rejects most config overrides
+                // The audio format is determined by the agent's dashboard settings
                 const initMessage = {
                     type: "conversation_initiation_client_data",
-                    conversation_config_override: {
-                        // Audio output format configuration
-                        audio: {
-                            output_format: "pcm_16000"
-                        }
-                    },
                     custom_llm_extra_body: {
                         caller_name: callerName,
                         caller_number: callerNumber
@@ -354,7 +348,7 @@ async function connectToElevenLabs(callerName, callerNumber) {
                 };
 
                 elevenLabsWs.send(JSON.stringify(initMessage));
-                console.log("📤 Sent config: output_format=pcm_16000");
+                console.log("📤 Sent simple init (no config overrides)");
 
                 resolve();
             });
@@ -433,7 +427,20 @@ function handleElevenLabsMessage(message) {
             break;
 
         case "audio":
-            // Audio handled separately in binary message handler
+            // Audio is sent as base64 in JSON messages
+            if (message.audio) {
+                const audioData = Buffer.from(message.audio, 'base64');
+                if (elevenLabsAudioCount < 5) {
+                    console.log(`🔊 Audio in JSON: ${audioData.length} bytes (decoded from base64)`);
+                }
+                handleElevenLabsAudio(audioData);
+            } else if (message.audio_event?.audio_base_64) {
+                const audioData = Buffer.from(message.audio_event.audio_base_64, 'base64');
+                if (elevenLabsAudioCount < 5) {
+                    console.log(`🔊 Audio event: ${audioData.length} bytes (decoded from base64)`);
+                }
+                handleElevenLabsAudio(audioData);
+            }
             break;
 
         case "ping":
