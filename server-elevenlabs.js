@@ -521,7 +521,7 @@ function handleElevenLabsAudio(audioData) {
 
         // Log audio info periodically
         if (elevenLabsAudioCount % 20 === 1) {
-            console.log(`🔊 ElevenLabs audio #${elevenLabsAudioCount}: ${pcmData.length} bytes (PCM 16kHz)`);
+            console.log(`🔊 ElevenLabs audio #${elevenLabsAudioCount}: ${pcmData.length} bytes (PCM 48kHz - direct!)`);
         }
 
         // Ensure even byte length for 16-bit samples
@@ -536,30 +536,9 @@ function handleElevenLabsAudio(audioData) {
         // Copy to aligned buffer and convert to Int16Array
         const alignedBuffer = Buffer.alloc(pcmData.length);
         pcmData.copy(alignedBuffer);
-        const samples16k = new Int16Array(alignedBuffer.buffer, alignedBuffer.byteOffset, alignedBuffer.length / 2);
 
-        // Upsample from 16kHz to 48kHz (3x ratio)
-        const ratio = 3; // 48000 / 16000
-        const samples48k = new Int16Array(samples16k.length * ratio);
-
-        // Linear interpolation upsampling
-        for (let i = 0; i < samples16k.length - 1; i++) {
-            const idx = i * ratio;
-            const sample1 = samples16k[i];
-            const sample2 = samples16k[i + 1];
-
-            for (let j = 0; j < ratio; j++) {
-                const t = j / ratio;
-                samples48k[idx + j] = Math.round(sample1 * (1 - t) + sample2 * t);
-            }
-        }
-        // Last sample
-        if (samples16k.length > 0) {
-            const lastIdx = (samples16k.length - 1) * ratio;
-            for (let j = 0; j < ratio; j++) {
-                samples48k[lastIdx + j] = samples16k[samples16k.length - 1];
-            }
-        }
+        // ElevenLabs sends PCM 48kHz - same as WhatsApp! No upsampling needed!
+        const samples48k = new Int16Array(alignedBuffer.buffer, alignedBuffer.byteOffset, alignedBuffer.length / 2);
 
         // Add to buffer
         const newBuffer = new Int16Array(elevenLabsAudioBuffer.length + samples48k.length);
