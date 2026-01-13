@@ -408,6 +408,8 @@ async function connectToElevenLabs(callerName, callerNumber) {
  * Handle control/text messages from ElevenLabs
  */
 function handleElevenLabsMessage(message) {
+
+    console.log("📩 ElevenLabs message:", message);
     switch (message.type) {
         case "conversation_initiation_metadata":
             conversationId = message.conversation_id;
@@ -690,20 +692,31 @@ function setupAudioBridge() {
 /**
  * Send audio from WhatsApp to ElevenLabs
  * 
- * Call this function when you have audio data from WhatsApp to send
+ * ElevenLabs Conversational AI accepts audio as base64 in JSON
  */
+let audioSendCount = 0;
+
 function sendAudioToElevenLabs(audioData) {
-    if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-        // ElevenLabs accepts audio in user_audio_chunk format
-        // For PCM: Base64 encoded, 16kHz, mono, 16-bit
-        // For Opus: Can be sent directly if configured
+    if (!elevenLabsWs || elevenLabsWs.readyState !== WebSocket.OPEN) {
+        return;
+    }
 
-        const audioMessage = {
-            type: "user_audio_chunk",
-            user_audio_chunk: audioData.toString('base64')
-        };
+    audioSendCount++;
 
+    // Log first few sends
+    if (audioSendCount <= 3) {
+        console.log(`📤 Sending audio to ElevenLabs: ${audioData.length} bytes`);
+    }
+
+    // ElevenLabs Conversational AI expects audio in this format
+    const audioMessage = {
+        user_audio_chunk: audioData.toString('base64')
+    };
+
+    try {
         elevenLabsWs.send(JSON.stringify(audioMessage));
+    } catch (err) {
+        console.error("❌ Error sending audio:", err.message);
     }
 }
 
