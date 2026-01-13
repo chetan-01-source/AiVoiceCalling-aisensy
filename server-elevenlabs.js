@@ -296,13 +296,20 @@ async function setupWhatsAppWebRTC() {
             await trackPromise;
             console.log("✅ WhatsApp audio track received");
 
-            // Create answer
+            // Create RTCAudioSource for sending audio to WhatsApp
+            // IMPORTANT: This must be done BEFORE createAnswer so the track is in the SDP
+            audioSource = new RTCAudioSource();
+            audioSenderTrack = audioSource.createTrack();
+            whatsappPc.addTrack(audioSenderTrack);
+            console.log("✅ RTCAudioSource track added to peer connection");
+
+            // Create answer (now includes our outgoing audio track)
             const answer = await whatsappPc.createAnswer();
             await whatsappPc.setLocalDescription(answer);
 
             // Fix setup attribute for WhatsApp
             const finalSdp = answer.sdp.replace("a=setup:actpass", "a=setup:active");
-            console.log("✅ WhatsApp answer SDP prepared");
+            console.log("✅ WhatsApp answer SDP prepared (with audio track)");
 
             resolve();
         } catch (error) {
@@ -608,10 +615,10 @@ function setupAudioBridge() {
             };
 
             console.log("✅ RTCAudioSink created and listening for audio");
-            console.log(`� Will resample from ${WHATSAPP_SAMPLE_RATE}Hz to ${ELEVENLABS_SAMPLE_RATE}Hz`);
+            console.log(`🔄 Will resample from ${WHATSAPP_SAMPLE_RATE}Hz to ${ELEVENLABS_SAMPLE_RATE}Hz`);
 
-            // Setup audio source for sending ElevenLabs audio back to WhatsApp
-            setupAudioSource();
+            // Note: Audio source is already created in setupWhatsAppWebRTC before createAnswer
+            console.log("✅ Audio bridge ready (audioSource already configured)");
 
         } else {
             console.warn("⚠️ No audio tracks found from WhatsApp");
@@ -622,24 +629,7 @@ function setupAudioBridge() {
     }
 }
 
-/**
- * Setup RTCAudioSource for sending audio from ElevenLabs back to WhatsApp
- */
-function setupAudioSource() {
-    try {
-        // Create audio source for sending audio to WhatsApp
-        audioSource = new RTCAudioSource();
-        audioSenderTrack = audioSource.createTrack();
-
-        // Add the track to the peer connection
-        if (whatsappPc) {
-            whatsappPc.addTrack(audioSenderTrack);
-            console.log("✅ RTCAudioSource created for sending audio to WhatsApp");
-        }
-    } catch (error) {
-        console.error("❌ Error setting up audio source:", error);
-    }
-}
+// Note: setupAudioSource is now done in setupWhatsAppWebRTC before createAnswer
 
 /**
  * Send audio from WhatsApp to ElevenLabs
