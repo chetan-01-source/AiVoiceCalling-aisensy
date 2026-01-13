@@ -261,7 +261,7 @@ async function createUltravoxCall(callerName, callerNumber) {
                     }
                 },
                 temperature: 0.8,
-                model: "fixie-ai/ultravox-v0_4_1-llama-3_3-70b"
+                model: "ultravox-v0.7"
             },
             {
                 headers: {
