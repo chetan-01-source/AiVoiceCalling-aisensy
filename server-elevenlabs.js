@@ -9,6 +9,7 @@ const {
     RTCSessionDescription,
     RTCIceCandidate,
     MediaStream,
+    nonstandard: { RTCAudioSink, RTCAudioSource }
 } = require("@roamhq/wrtc");
 
 // STUN server for NAT traversal
@@ -27,6 +28,10 @@ const AISENSY_HEADERS = {
 // ElevenLabs Conversational AI Configuration
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
+
+// Audio configuration - ElevenLabs requires 16kHz PCM
+const ELEVENLABS_SAMPLE_RATE = 16000;
+const WHATSAPP_SAMPLE_RATE = 48000;
 
 const app = express();
 const server = http.createServer(app);
@@ -53,6 +58,9 @@ let whatsappOfferSdp = null;
 let currentCallId = null;
 let elevenLabsWs = null;
 let conversationId = null;
+let audioSink = null;       // RTCAudioSink for extracting audio from WhatsApp
+let audioSource = null;     // RTCAudioSource for sending audio to WhatsApp
+let audioSenderTrack = null; // Track for sending audio back to WhatsApp
 
 /**
  * AiSensy Webhook - handles all call events
@@ -426,30 +434,66 @@ function handleElevenLabsMessage(message) {
 /**
  * Handle audio data from ElevenLabs
  * 
- * ElevenLabs returns audio in the configured format.
- * With Opus output, it's directly compatible with WhatsApp!
+ * ElevenLabs sends audio as base64 encoded PCM at 16kHz
+ * We need to upsample to 48kHz and send to WhatsApp via RTCAudioSource
  */
 function handleElevenLabsAudio(audioData) {
-    // Forward audio to WhatsApp WebRTC
-    // In production: inject this audio into the WebRTC sender track
+    try {
+        if (!audioSource) {
+            return;
+        }
 
-    // For now, log that we received audio
-    // console.log(`🔊 Received ${audioData.length} bytes of audio from ElevenLabs`);
+        // ElevenLabs might send audio as binary or in a JSON wrapper
+        let pcmData;
 
-    // TODO: Implement audio injection into WebRTC track
-    // This requires creating an audio source and feeding it to the peer connection
+        if (Buffer.isBuffer(audioData)) {
+            pcmData = audioData;
+        } else {
+            // If it's base64 encoded in a message
+            pcmData = Buffer.from(audioData, 'base64');
+        }
+
+        // Convert buffer to Int16Array (16-bit PCM)
+        const samples16k = new Int16Array(pcmData.buffer, pcmData.byteOffset, pcmData.length / 2);
+
+        // Upsample from 16kHz to 48kHz (WhatsApp rate)
+        const ratio = WHATSAPP_SAMPLE_RATE / ELEVENLABS_SAMPLE_RATE; // 48000/16000 = 3
+        const samples48k = new Int16Array(samples16k.length * ratio);
+
+        // Simple upsampling with linear interpolation
+        for (let i = 0; i < samples16k.length - 1; i++) {
+            const idx = i * ratio;
+            const sample1 = samples16k[i];
+            const sample2 = samples16k[i + 1];
+
+            for (let j = 0; j < ratio; j++) {
+                const t = j / ratio;
+                samples48k[idx + j] = Math.round(sample1 * (1 - t) + sample2 * t);
+            }
+        }
+
+        // Send to WhatsApp via RTCAudioSource
+        audioSource.onData({
+            samples: samples48k,
+            sampleRate: WHATSAPP_SAMPLE_RATE,
+            bitsPerSample: 16,
+            channelCount: 1,
+            numberOfFrames: samples48k.length
+        });
+
+    } catch (error) {
+        console.error("❌ Error handling ElevenLabs audio:", error.message);
+    }
 }
 
 /**
  * Setup bidirectional audio bridge between WhatsApp and ElevenLabs
  * 
- * KEY ADVANTAGE: ElevenLabs supports Opus at 48kHz!
- * - WhatsApp sends Opus at 48kHz
- * - ElevenLabs accepts Opus at 48kHz
- * - No decoding/resampling needed!
+ * Uses RTCAudioSink to extract raw PCM audio from WebRTC
+ * Audio is resampled from 48kHz to 16kHz for ElevenLabs
  */
 function setupAudioBridge() {
-    console.log("🌉 Setting up audio bridge (ElevenLabs Opus mode)...");
+    console.log("🌉 Setting up audio bridge with RTCAudioSink...");
 
     try {
         // Get audio tracks from WhatsApp
@@ -460,20 +504,78 @@ function setupAudioBridge() {
             const audioTrack = audioTracks[0];
             console.log(`✅ Audio track found: ${audioTrack.kind}, enabled: ${audioTrack.enabled}`);
 
-            // ElevenLabs advantage: We can forward Opus audio directly!
-            // No need for:
-            // - Opus decoding (node-opus, @discordjs/opus)
-            // - Resampling (48kHz → 16kHz)
-            // - PCM conversion
+            // Create RTCAudioSink to extract audio from the track
+            audioSink = new RTCAudioSink(audioTrack);
 
-            // In production implementation:
-            // 1. Extract RTP packets from WebRTC track
-            // 2. Forward Opus payload to ElevenLabs WebSocket
-            // 3. ElevenLabs processes Opus directly
+            let sampleCount = 0;
+            let audioBuffer = Buffer.alloc(0);
+            const CHUNK_SIZE = 4000; // ~250ms of audio at 16kHz mono (16-bit)
 
-            console.log("✅ Audio bridge configured for ElevenLabs Opus passthrough");
-            console.log("📝 Note: Full RTP packet extraction requires additional implementation");
-            console.log("💡 ElevenLabs accepts: Opus 48kHz, PCM 16kHz (base64 encoded)");
+            audioSink.ondata = (data) => {
+                // data contains:
+                // - samples: Int16Array of audio samples
+                // - sampleRate: number (usually 48000)
+                // - bitsPerSample: number (usually 16)
+                // - channelCount: number (1 for mono, 2 for stereo)
+                // - numberOfFrames: number
+
+                if (!elevenLabsWs || elevenLabsWs.readyState !== WebSocket.OPEN) {
+                    return;
+                }
+
+                sampleCount++;
+
+                // Log every 100 chunks to avoid spam
+                if (sampleCount % 100 === 1) {
+                    console.log(`🎤 Audio chunk #${sampleCount}: ${data.samples.length} samples @ ${data.sampleRate}Hz, ${data.channelCount}ch`);
+                }
+
+                try {
+                    // Get PCM samples
+                    const samples = data.samples;
+                    const sampleRate = data.sampleRate || 48000;
+                    const channels = data.channelCount || 1;
+
+                    // Resample from 48kHz to 16kHz if needed
+                    let resampledSamples;
+                    if (sampleRate === 48000 && ELEVENLABS_SAMPLE_RATE === 16000) {
+                        // Simple downsampling: take every 3rd sample (48000/16000 = 3)
+                        const ratio = sampleRate / ELEVENLABS_SAMPLE_RATE;
+                        const newLength = Math.floor(samples.length / ratio / channels);
+                        resampledSamples = new Int16Array(newLength);
+
+                        for (let i = 0; i < newLength; i++) {
+                            // If stereo, take left channel; otherwise just downsample
+                            const srcIndex = Math.floor(i * ratio) * channels;
+                            resampledSamples[i] = samples[srcIndex];
+                        }
+                    } else {
+                        // No resampling needed or different sample rate
+                        resampledSamples = samples;
+                    }
+
+                    // Convert Int16Array to Buffer
+                    const buffer = Buffer.from(resampledSamples.buffer);
+
+                    // Accumulate audio chunks
+                    audioBuffer = Buffer.concat([audioBuffer, buffer]);
+
+                    // Send when we have enough audio (avoid sending too frequently)
+                    if (audioBuffer.length >= CHUNK_SIZE) {
+                        sendAudioToElevenLabs(audioBuffer);
+                        audioBuffer = Buffer.alloc(0);
+                    }
+
+                } catch (err) {
+                    console.error("❌ Error processing audio chunk:", err.message);
+                }
+            };
+
+            console.log("✅ RTCAudioSink created and listening for audio");
+            console.log(`� Will resample from ${WHATSAPP_SAMPLE_RATE}Hz to ${ELEVENLABS_SAMPLE_RATE}Hz`);
+
+            // Setup audio source for sending ElevenLabs audio back to WhatsApp
+            setupAudioSource();
 
         } else {
             console.warn("⚠️ No audio tracks found from WhatsApp");
@@ -481,6 +583,25 @@ function setupAudioBridge() {
 
     } catch (error) {
         console.error("❌ Error in setupAudioBridge:", error);
+    }
+}
+
+/**
+ * Setup RTCAudioSource for sending audio from ElevenLabs back to WhatsApp
+ */
+function setupAudioSource() {
+    try {
+        // Create audio source for sending audio to WhatsApp
+        audioSource = new RTCAudioSource();
+        audioSenderTrack = audioSource.createTrack();
+
+        // Add the track to the peer connection
+        if (whatsappPc) {
+            whatsappPc.addTrack(audioSenderTrack);
+            console.log("✅ RTCAudioSource created for sending audio to WhatsApp");
+        }
+    } catch (error) {
+        console.error("❌ Error setting up audio source:", error);
     }
 }
 
@@ -559,6 +680,19 @@ async function acceptCall(callId, sdp, callbackData = null) {
 // Cleanup all connections
 function cleanupConnections() {
     console.log("🧹 Cleaning up connections...");
+
+    // Stop audio sink
+    if (audioSink) {
+        audioSink.stop();
+        audioSink = null;
+    }
+
+    // Stop audio source track
+    if (audioSenderTrack) {
+        audioSenderTrack.stop();
+        audioSenderTrack = null;
+    }
+    audioSource = null;
 
     if (whatsappPc) {
         whatsappPc.close();
