@@ -1,16 +1,18 @@
 {
-  "name": "whatsapp-calling-ultravox",
-  "version": "2.0.0",
-  "description": "Automated WhatsApp AI voice calling with AiSensy and Ultravox - server-side WebRTC implementation",
-  "main": "server-ultravox.js",
+  "name": "whatsapp-ai-calling",
+  "version": "2.1.0",
+  "description": "Automated WhatsApp AI voice calling with AiSensy - supports ElevenLabs and Ultravox",
+  "main": "server-elevenlabs.js",
   "author": "Amit Kulkarni",
   "license": "MIT",
   "scripts": {
-    "start": "node server-ultravox.js",
+    "start": "node server-elevenlabs.js",
+    "start:elevenlabs": "node server-elevenlabs.js",
+    "start:ultravox": "node server-ultravox.js",
     "start:old": "node server.js",
     "build": "echo 'No build step required - Node.js server ready for deployment'",
-    "dev": "node server-ultravox.js",
-    "dev:old": "node server.js"
+    "dev": "node server-elevenlabs.js",
+    "dev:ultravox": "node server-ultravox.js"
   },
   "dependencies": {
     "@roamhq/wrtc": "^0.9.1",
