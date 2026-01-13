@@ -337,25 +337,24 @@ async function connectToElevenLabs(callerName, callerNumber) {
             elevenLabsWs.on("open", () => {
                 console.log("✅ ElevenLabs WebSocket connected");
 
-                // Initialize conversation with caller context and audio configuration
-                // Request PCM 16kHz output for easier processing
+                // Initialize conversation with audio configuration
+                // Request PCM 16kHz output - this should work based on ElevenLabs API
                 const initMessage = {
                     type: "conversation_initiation_client_data",
                     conversation_config_override: {
-                        tts: {
-                            // Request raw PCM 16kHz output (easier to process than μ-law or MP3)
+                        // Audio output format configuration
+                        audio: {
                             output_format: "pcm_16000"
                         }
                     },
                     custom_llm_extra_body: {
                         caller_name: callerName,
-                        caller_number: callerNumber,
-                        context: `Caller: ${callerName} (${callerNumber})`
+                        caller_number: callerNumber
                     }
                 };
 
                 elevenLabsWs.send(JSON.stringify(initMessage));
-                console.log("📤 Sent conversation initialization (PCM 16kHz output)");
+                console.log("📤 Sent config: output_format=pcm_16000");
 
                 resolve();
             });
@@ -363,8 +362,19 @@ async function connectToElevenLabs(callerName, callerNumber) {
             elevenLabsWs.on("message", (data) => {
                 // Handle messages from ElevenLabs
                 if (Buffer.isBuffer(data)) {
-                    // Binary audio data from ElevenLabs AI
-                    console.log(`🔊 Received binary audio from ElevenLabs: ${data.length} bytes`);
+                    // Binary audio data
+                    // Detect format by checking first bytes
+                    const firstBytes = data.slice(0, 4).toString('hex');
+                    const isOpus = firstBytes.startsWith('4f67'); // OggS
+                    const isMp3 = firstBytes.startsWith('fff') || firstBytes.startsWith('494433'); // MP3 sync or ID3
+
+                    if (elevenLabsAudioCount < 5) {
+                        console.log(`🔊 Binary audio: ${data.length} bytes, first bytes: ${firstBytes}`);
+                        if (isOpus) console.log("   Format detected: Opus/Ogg");
+                        else if (isMp3) console.log("   Format detected: MP3");
+                        else console.log("   Format: Assuming raw PCM");
+                    }
+
                     handleElevenLabsAudio(data);
                 } else {
                     // JSON control/text messages
