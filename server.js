@@ -133,32 +133,48 @@ app.post("/aisensy-webhook", async (req, res) => {
             return res.status(400).json({ error: "Empty request body" });
         }
 
-        const { topic, data } = req.body;
+        // Parse AiSensy's webhook format
+        const { object, entry, topic } = req.body;
 
         // Log what we received
         console.log(`Topic: ${topic}`);
-        console.log(`Data present: ${!!data}`);
-        console.log(`Call data present: ${!!(data && data.call)}`);
+        console.log(`Object: ${object}`);
+        console.log(`Entry present: ${!!entry}`);
 
         if (!topic) {
             console.warn("⚠️ Missing 'topic' in webhook payload");
             return res.status(200).json({ received: true, message: "Missing topic" });
         }
 
-        if (!data) {
-            console.warn("⚠️ Missing 'data' in webhook payload");
-            return res.status(200).json({ received: true, message: "Missing data" });
+        if (!entry || !Array.isArray(entry) || entry.length === 0) {
+            console.warn("⚠️ Missing or empty 'entry' array in webhook payload");
+            return res.status(200).json({ received: true, message: "Missing entry data" });
         }
 
-        if (!data.call) {
-            console.warn("⚠️ Missing 'data.call' in webhook payload");
-            console.log("Data structure:", JSON.stringify(data, null, 2));
-            return res.status(200).json({ received: true, message: "Missing call data" });
+        // Extract call data from AiSensy's format: entry[0].changes[0].value.calls[0]
+        const changes = entry[0]?.changes;
+        if (!changes || !Array.isArray(changes) || changes.length === 0) {
+            console.warn("⚠️ No changes found in entry");
+            return res.status(200).json({ received: true, message: "No changes data" });
         }
 
-        const call = data.call;
-        const callId = call.wa_call_id || call.id || call.callId;
+        const value = changes[0]?.value;
+        if (!value) {
+            console.warn("⚠️ No value found in changes");
+            return res.status(200).json({ received: true, message: "No value data" });
+        }
 
+        const calls = value.calls;
+        if (!calls || !Array.isArray(calls) || calls.length === 0) {
+            console.warn("⚠️ No calls found in value");
+            console.log("Value structure:", JSON.stringify(value, null, 2));
+            return res.status(200).json({ received: true, message: "No calls data" });
+        }
+
+        const call = calls[0];
+        console.log("✅ Call data extracted:", JSON.stringify(call, null, 2));
+
+        const callId = call.id;
         if (!callId) {
             console.error("❌ No call ID found in webhook data");
             console.log("Call object:", JSON.stringify(call, null, 2));
@@ -168,98 +184,82 @@ app.post("/aisensy-webhook", async (req, res) => {
         currentCallId = callId;
         console.log(`✅ Processing call ID: ${callId}`);
 
-        // Handle different webhook topics
-        switch (topic) {
-            case "call.connect":
-                console.log("📞 Processing call.connect event");
-                try {
-                    // Incoming call - user initiated
-                    console.log(`Incoming call from ${call.user_number || call.from || "Unknown"}`);
+        const callEvent = call.event; // "connect" or "terminate"
+        const callStatus = call.status; // "COMPLETED", etc.
+        const callerNumber = call.from;
+        const receiverNumber = call.to;
 
-                    // Extract SDP from connection object
-                    if (call.connection && call.connection.sdp) {
-                        whatsappOfferSdp = call.connection.sdp;
-                        console.log("✅ SDP extracted from call.connection.sdp");
-                    } else if (call.sdp) {
-                        whatsappOfferSdp = call.sdp;
-                        console.log("✅ SDP extracted from call.sdp");
-                    } else {
-                        console.warn("⚠️ No SDP found in call data");
-                        console.log("Call structure:", JSON.stringify(call, null, 2));
-                    }
+        console.log(`📞 Call event: ${callEvent}, Status: ${callStatus || 'N/A'}`);
+        console.log(`📞 From: ${callerNumber}, To: ${receiverNumber}`);
 
-                    io.emit("call-is-coming", {
-                        callId: callId,
-                        callerName: call.caller || call.name || "Unknown",
-                        callerNumber: call.user_number || call.from || "Unknown",
-                        callType: call.type || "voice"
-                    });
+        // Handle different call events
+        if (callEvent === "connect") {
+            console.log("📞 Processing incoming call 'connect' event");
+            try {
+                // Incoming call - user initiated
+                console.log(`Incoming call from ${callerNumber}`);
 
-                    console.log("📡 Emitted 'call-is-coming' to browser");
-
-                    // Only initiate bridge if we have both SDPs
-                    if (browserOfferSdp && whatsappOfferSdp) {
-                        await initiateWebRTCBridge();
-                    } else {
-                        console.log("⏳ Waiting for browser SDP before establishing bridge");
-                    }
-                } catch (error) {
-                    console.error("❌ Error in call.connect handler:", error);
-                    throw error;
+                // Extract SDP from session object
+                if (call.session && call.session.sdp) {
+                    whatsappOfferSdp = call.session.sdp;
+                    console.log("✅ SDP extracted from call.session.sdp");
+                    console.log("SDP type:", call.session.sdp_type); // Should be "offer"
+                } else {
+                    console.warn("⚠️ No SDP found in call.session");
+                    console.log("Call structure:", JSON.stringify(call, null, 2));
                 }
-                break;
 
-            case "call.status":
-                console.log("📊 Processing call.status event");
-                try {
-                    // Call status updates
-                    console.log(`Call status update: ${call.status || "unknown"}`);
-                    io.emit("call-status-update", {
-                        callId: callId,
-                        status: call.status,
-                        duration: call.duration || 0,
-                        timestamps: {
-                            ringing: call.ringing_at,
-                            accepted: call.accepted_at,
-                            preAccept: call.pre_accept_at
-                        }
-                    });
-                } catch (error) {
-                    console.error("❌ Error in call.status handler:", error);
-                    throw error;
+                // Get caller name from contacts
+                const contacts = value.contacts;
+                let callerName = "Unknown";
+                if (contacts && Array.isArray(contacts) && contacts.length > 0) {
+                    callerName = contacts[0].profile?.name || "Unknown";
                 }
-                break;
 
-            case "call.terminated":
-                console.log("📴 Processing call.terminated event");
-                try {
-                    // Call ended
-                    console.log(`Call terminated. Duration: ${call.duration || 0}s`);
-                    io.emit("call-ended", {
-                        callId: callId,
-                        duration: call.duration || 0,
-                        billedAmount: call.billed_amount,
-                        recordingUrl: call.recording_url,
-                        transcriptUrl: call.transcript_url,
-                        callSummary: call.call_summary
-                    });
+                io.emit("call-is-coming", {
+                    callId: callId,
+                    callerName: callerName,
+                    callerNumber: callerNumber,
+                    callType: "voice"
+                });
 
-                    // Cleanup
-                    cleanupPeerConnections();
-                    console.log("✅ Cleaned up peer connections");
-                } catch (error) {
-                    console.error("❌ Error in call.terminated handler:", error);
-                    throw error;
+                console.log("📡 Emitted 'call-is-coming' to browser");
+
+                // Only initiate bridge if we have both SDPs
+                if (browserOfferSdp && whatsappOfferSdp) {
+                    await initiateWebRTCBridge();
+                } else {
+                    console.log("⏳ Waiting for browser SDP before establishing bridge");
                 }
-                break;
+            } catch (error) {
+                console.error("❌ Error in 'connect' event handler:", error);
+                throw error;
+            }
+        } else if (callEvent === "terminate") {
+            console.log("📴 Processing call 'terminate' event");
+            try {
+                // Call ended
+                console.log(`Call terminated. Status: ${callStatus}`);
+                io.emit("call-ended", {
+                    callId: callId,
+                    status: callStatus,
+                    timestamp: call.timestamp
+                });
 
-            default:
-                console.log(`⚠️ Unhandled webhook topic: ${topic}`);
-                console.log("Full webhook data:", JSON.stringify(req.body, null, 2));
+                // Cleanup
+                cleanupPeerConnections();
+                console.log("✅ Cleaned up peer connections");
+            } catch (error) {
+                console.error("❌ Error in 'terminate' event handler:", error);
+                throw error;
+            }
+        } else {
+            console.log(`⚠️ Unhandled call event: ${callEvent}`);
+            console.log("Full call data:", JSON.stringify(call, null, 2));
         }
 
         console.log("✅ Webhook processed successfully");
-        res.status(200).json({ received: true, topic, callId });
+        res.status(200).json({ received: true, topic, callId, event: callEvent });
     } catch (err) {
         console.error("========================================");
         console.error("❌ ERROR processing AiSensy webhook");
