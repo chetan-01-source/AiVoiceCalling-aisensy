@@ -517,7 +517,7 @@ function startAudioPlayback() {
             clearInterval(audioPlaybackTimer);
             audioPlaybackTimer = null;
         }
-    }, 10); // 10ms = real-time for 480 samples at 48kHz
+    }, 7); // 10ms = real-time for 480 samples at 48kHz
 }
 
 /**
