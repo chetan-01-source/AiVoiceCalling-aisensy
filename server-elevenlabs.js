@@ -29,9 +29,12 @@ const AISENSY_HEADERS = {
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID;
 
-// Audio configuration - ElevenLabs requires 16kHz PCM
-const ELEVENLABS_SAMPLE_RATE = 16000;
-const WHATSAPP_SAMPLE_RATE = 48000;
+// Audio configuration
+// - WhatsApp WebRTC: 48kHz PCM (both input and output)
+// - ElevenLabs INPUT: 16kHz PCM (user audio sent to AI)
+// - ElevenLabs OUTPUT: 48kHz PCM (AI audio, direct to WhatsApp - no conversion!)
+const ELEVENLABS_INPUT_SAMPLE_RATE = 16000;  // For sending user audio TO ElevenLabs
+const WHATSAPP_SAMPLE_RATE = 48000;           // WhatsApp and ElevenLabs output both use 48kHz
 
 const app = express();
 const server = http.createServer(app);
@@ -324,8 +327,9 @@ async function setupWhatsAppWebRTC() {
 /**
  * Connect to ElevenLabs Conversational AI via WebSocket
  * 
- * KEY ADVANTAGE: ElevenLabs supports Opus at 48kHz - same as WhatsApp!
- * No audio decoding/encoding required!
+ * Audio Format:
+ * - INPUT (User → AI): We resample 48kHz → 16kHz before sending
+ * - OUTPUT (AI → User): ElevenLabs sends 48kHz PCM - DIRECT to WhatsApp, no conversion!
  */
 async function connectToElevenLabs(callerName, callerNumber) {
     return new Promise((resolve, reject) => {
@@ -520,36 +524,14 @@ function startAudioPlayback() {
     }, 10); // 10ms = real-time for 480 samples at 48kHz
 }
 
-/**
- * μ-law to linear PCM decoder (kept for backwards compatibility)
- */
-const MULAW_DECODE_TABLE = new Int16Array(256);
-(function initMulawTable() {
-    for (let i = 0; i < 256; i++) {
-        let mulaw = ~i;
-        let sign = (mulaw & 0x80) ? -1 : 1;
-        let exponent = (mulaw >> 4) & 0x07;
-        let mantissa = mulaw & 0x0F;
-        let sample = ((mantissa << 3) + 0x84) << exponent;
-        sample = (sample - 0x84) * sign;
-        MULAW_DECODE_TABLE[i] = sample;
-    }
-})();
-
-function decodeMulaw(mulawData) {
-    const pcmSamples = new Int16Array(mulawData.length);
-    for (let i = 0; i < mulawData.length; i++) {
-        pcmSamples[i] = MULAW_DECODE_TABLE[mulawData[i]];
-    }
-    return pcmSamples;
-}
+// Note: μ-law decoder removed - ElevenLabs sends PCM 48kHz directly
 
 /**
  * Handle audio data from ElevenLabs
  * 
- * We configured ElevenLabs to send PCM 16kHz (output_format: pcm_16000)
- * Binary data is raw 16-bit PCM samples
- * Upsample to 48kHz for WhatsApp
+ * ElevenLabs Conversational AI outputs 48kHz PCM - same as WhatsApp!
+ * Binary data is raw 16-bit PCM samples at 48kHz
+ * NO CONVERSION NEEDED - direct passthrough to WhatsApp
  */
 let elevenLabsAudioCount = 0;
 
@@ -608,8 +590,8 @@ function handleElevenLabsAudio(audioData) {
 /**
  * Setup bidirectional audio bridge between WhatsApp and ElevenLabs
  * 
- * Uses RTCAudioSink to extract raw PCM audio from WebRTC
- * Audio is resampled from 48kHz to 16kHz for ElevenLabs
+ * - WhatsApp → ElevenLabs: Downsample 48kHz to 16kHz (ElevenLabs input requirement)
+ * - ElevenLabs → WhatsApp: Direct 48kHz passthrough (no conversion needed!)
  */
 function setupAudioBridge() {
     console.log("🌉 Setting up audio bridge with RTCAudioSink...");
@@ -655,11 +637,11 @@ function setupAudioBridge() {
                     const sampleRate = data.sampleRate || 48000;
                     const channels = data.channelCount || 1;
 
-                    // Resample from 48kHz to 16kHz if needed
+                    // Downsample from 48kHz to 16kHz for ElevenLabs input
                     let resampledSamples;
-                    if (sampleRate === 48000 && ELEVENLABS_SAMPLE_RATE === 16000) {
+                    if (sampleRate === 48000 && ELEVENLABS_INPUT_SAMPLE_RATE === 16000) {
                         // Simple downsampling: take every 3rd sample (48000/16000 = 3)
-                        const ratio = sampleRate / ELEVENLABS_SAMPLE_RATE;
+                        const ratio = sampleRate / ELEVENLABS_INPUT_SAMPLE_RATE;
                         const newLength = Math.floor(samples.length / ratio / channels);
                         resampledSamples = new Int16Array(newLength);
 
@@ -691,7 +673,7 @@ function setupAudioBridge() {
             };
 
             console.log("✅ RTCAudioSink created and listening for audio");
-            console.log(`🔄 Will resample from ${WHATSAPP_SAMPLE_RATE}Hz to ${ELEVENLABS_SAMPLE_RATE}Hz`);
+            console.log(`🔄 Will downsample from ${WHATSAPP_SAMPLE_RATE}Hz to ${ELEVENLABS_INPUT_SAMPLE_RATE}Hz for ElevenLabs input`);
 
             // Note: Audio source is already created in setupWhatsAppWebRTC before createAnswer
             console.log("✅ Audio bridge ready (audioSource already configured)");
